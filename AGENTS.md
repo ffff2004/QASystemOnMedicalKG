@@ -10,7 +10,8 @@
 - `question_classifier.py`、`dict/`：问句分类和实体词典。
 - `question_parser.py`、`answer_search.py`：生成和执行 Cypher 查询，格式化答案。
 - `build_medicalgraph.py`、`data/medical.json`：图谱入库脚本和数据。
-- `graph_connection.py`：入库和问答共用的 Neo4j 连接配置。
+- `graph_connection.py`：入库和问答共用的 Neo4j 连接配置，从环境变量或 `.env` 读取。
+- `.env.example`：Neo4j 连接配置模板；复制为 `.env` 后使用。
 - `pyproject.toml`、`uv.lock`：Python 依赖声明和锁文件。
 
 ## 常用命令

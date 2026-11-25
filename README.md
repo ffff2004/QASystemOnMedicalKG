@@ -18,15 +18,14 @@ self-implement of disease centered Medical graph from zero to full and sever as 
 
 # 项目运行方式
 
-需要 Neo4j 和 `uv`。以下命令在仓库根目录执行；`uv run` 会准备 Python 3.12，并按 `uv.lock` 同步 `.venv`。数据已包含在 `data/medical.json`，无需运行采集脚本。
+需要 Neo4j 和 `uv`。以下命令在仓库根目录执行；`uv run` 会准备 Python 3.12，并按 `uv.lock` 同步 `.venv`。数据已包含在 `data/medical.json`，无需运行采集脚本。Neo4j 连接信息从环境变量或仓库根目录的 `.env` 读取，已设置的环境变量优先。
 
-1. 启动 Neo4j。已有实例可跳过容器命令，填入实际的连接配置即可。下面是用 Podman 启动本地实例的示例：
+1. 配置并启动 Neo4j。已有实例可跳过容器命令，只保留 `.env` 配置。下面是用 Podman 启动本地实例的示例：
 
    ```bash
-   export NEO4J_URI=bolt://127.0.0.1:7687
-   export NEO4J_USER=neo4j
-   read -r -s -p 'Neo4j 密码（至少 8 个字符）: ' NEO4J_PASSWORD; echo
-   export NEO4J_PASSWORD
+   cp .env.example .env
+   # 编辑 .env，设置 NEO4J_PASSWORD（至少 8 个字符）
+   set -a; . ./.env; set +a
 
    podman run -d --name medical-neo4j \
      -p 127.0.0.1:7687:7687 \
@@ -34,7 +33,9 @@ self-implement of disease centered Medical graph from zero to full and sever as 
      docker.io/library/neo4j:2026.10.2-community
    ```
 
-2. Neo4j 就绪后导入图谱。脚本会先建唯一约束，再用批量 `MERGE` 写入，重复执行不会产生重复数据，全量约 30 秒。若数据库中已有旧版导入产生的重复数据，或需要完全重建，用 `--reset` 先清空（仅用于专用实例）。使用上述容器时，可用 `podman logs medical-neo4j` 确认启动状态。
+   `.env` 已被 `.gitignore` 忽略，不要提交真实密码；也可以直接 export 同名变量。
+
+2. Neo4j 就绪后导入图谱。脚本会自动读取 `.env`，先建唯一约束，再用批量 `MERGE` 写入，重复执行不会产生重复数据，全量约 30 秒。若数据库中已有旧版导入产生的重复数据，或需要完全重建，用 `--reset` 先清空（仅用于专用实例）。使用上述容器时，可用 `podman logs medical-neo4j` 确认启动状态。
 
    ```bash
    uv run python build_medicalgraph.py
