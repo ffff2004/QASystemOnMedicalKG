@@ -4,15 +4,11 @@
 # Author: lhy<lhy_in_blcu@126.com,https://huangyong.github.io>
 # Date: 18-10-5
 
-from py2neo import Graph
+from graph_connection import connect_graph
 
 class AnswerSearcher:
     def __init__(self):
-        self.g = Graph(
-            host="127.0.0.1",
-            http_port=7474,
-            user="lhy",
-            password="lhy123")
+        self.g = connect_graph()
         self.num_limit = 20
 
     '''执行cypher查询，并返回相应结果'''

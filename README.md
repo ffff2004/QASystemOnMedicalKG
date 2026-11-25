@@ -17,9 +17,34 @@ self-implement of disease centered Medical graph from zero to full and sever as 
 ![image](https://github.com/liuhuanyong/QABasedOnMedicalKnowledgeGraph/blob/master/img/chat2.png)
 
 # 项目运行方式
-1、配置要求：要求配置neo4j数据库及相应的python依赖包。neo4j数据库用户名密码记住，并修改相应文件。  
-2、知识图谱数据导入：python build_medicalgraph.py，导入的数据较多，估计需要几个小时。  
-3、启动问答：python chat_graph.py
+
+需要 Neo4j 和 Python 3.12。以下命令在仓库根目录执行，用 `uv` 安装问答和入库所需的 Python 依赖。数据已包含在 `data/medical.json`，无需运行采集脚本。
+
+1. 启动 Neo4j。已有实例可跳过容器命令，填入实际的连接配置即可。下面是用 Podman 启动本地实例的示例：
+
+   ```bash
+   export NEO4J_URI=bolt://127.0.0.1:7687
+   export NEO4J_USER=neo4j
+   read -r -s -p 'Neo4j 密码（至少 8 个字符）: ' NEO4J_PASSWORD; echo
+   export NEO4J_PASSWORD
+
+   podman run -d --name medical-neo4j \
+     -p 127.0.0.1:7687:7687 \
+     -e NEO4J_AUTH="${NEO4J_USER}/${NEO4J_PASSWORD}" \
+     docker.io/library/neo4j:2026.10.2-community
+   ```
+
+2. Neo4j 就绪后，向空数据库导入图谱。使用上述容器时，可用 `podman logs medical-neo4j` 确认启动状态。全量导入可能需要数小时，重复执行会创建重复数据。
+
+   ```bash
+   uv run --no-project --python 3.12 --with-requirements requirements.txt python build_medicalgraph.py
+   ```
+
+3. 在同一个终端启动问答，试着输入「乳腺癌的症状有哪些？」：
+
+   ```bash
+   uv run --no-project --python 3.12 --with-requirements requirements.txt python chatbot_graph.py
+   ```
 
 # 以下介绍详细方案
 # 一、医疗知识图谱构建
