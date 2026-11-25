@@ -1,36 +1,93 @@
 #!/usr/bin/env python3
-# coding: utf-8
-# File: chatbot_graph.py
-# Author: lhy<lhy_in_blcu@126.com,https://huangyong.github.io>
-# Date: 18-10-4
+import argparse
+import json
+import os
+from pathlib import Path
+import sys
 
-from question_classifier import *
-from question_parser import *
-from answer_search import *
+from dotenv import load_dotenv
+from openai import OpenAI
 
-'''问答类'''
-class ChatBotGraph:
-    def __init__(self):
-        self.classifier = QuestionClassifier()
-        self.parser = QuestionPaser()
-        self.searcher = AnswerSearcher()
+from cypher_graph import CypherGraph, GraphQueryError
+from llm_qa import QA, QAError
 
-    def chat_main(self, sent):
-        answer = '您好，我是小勇医药智能助理，希望可以帮到您。如果没答上来，可联系https://liuhuanyong.github.io/。祝您身体棒棒！'
-        res_classify = self.classifier.classify(sent)
-        if not res_classify:
-            return answer
-        res_sql = self.parser.parser_main(res_classify)
-        final_answers = self.searcher.search_main(res_sql)
-        if not final_answers:
-            return answer
-        else:
-            return '\n'.join(final_answers)
+
+def _trace_query(cypher, parameters, result):
+    print(f'[Cypher] {cypher}', file=sys.stderr)
+    print(f'[参数] {json.dumps(parameters, ensure_ascii=False)}', file=sys.stderr)
+    print(f'[Neo4j] {json.dumps(result["rows"], ensure_ascii=False)}', file=sys.stderr)
+    if result['truncated']:
+        print('[Neo4j] 结果已截断。', file=sys.stderr)
+
+
+def _trace_reasoning(text):
+    visible = ''.join(char for char in text if char.isprintable() or char == '\n')
+    print(f'[DeepSeek 推理] {visible}', file=sys.stderr)
+
+
+def _interactive(qa, *, multi_turn):
+    while True:
+        try:
+            print('用户：', end='', file=sys.stderr, flush=True)
+            question = input().strip()
+        except (EOFError, KeyboardInterrupt):
+            print(file=sys.stderr)
+            return 0
+        if not question:
+            continue
+        if multi_turn and question == '/reset':
+            qa.reset()
+            print('会话已清空。', file=sys.stderr)
+            continue
+        try:
+            print(qa.ask(question))
+        except QAError as error:
+            print(f'问答失败：{error}', file=sys.stderr)
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description='基于 Neo4j 医疗知识图谱的 DeepSeek 问答')
+    parser.add_argument('--mode', choices=('workflow', 'agent'), default='workflow')
+    parser.add_argument('--question', help='仅回答一个问题后退出；省略时进入交互问答')
+    parser.add_argument('--show-cypher', action='store_true', help='在 stderr 展示查询与原始结果行')
+    parser.add_argument('--show-reasoning', action='store_true', help='在 stderr 展示 API 返回的推理')
+    args = parser.parse_args(argv)
+    if args.question is not None and not args.question.strip():
+        parser.error('--question 不能为空')
+
+    load_dotenv(Path(__file__).with_name('.env'), override=False)
+    api_key = os.getenv('DEEPSEEK_API_KEY', '').strip()
+    if not api_key:
+        print('请在 .env 或环境变量中配置 DEEPSEEK_API_KEY。', file=sys.stderr)
+        return 1
+    reasoning_effort = os.getenv('DEEPSEEK_REASONING_EFFORT', 'none').strip().lower()
+    if reasoning_effort not in ('none', 'low', 'high', 'max'):
+        print('DEEPSEEK_REASONING_EFFORT 须为 none、low、high 或 max。', file=sys.stderr)
+        return 1
+    if args.show_reasoning and reasoning_effort == 'none':
+        print('DEEPSEEK_REASONING_EFFORT=none，没有推理可展示。', file=sys.stderr)
+
+    try:
+        graph = CypherGraph()
+        try:
+            graph.ensure_read_only()
+            multi_turn = args.mode == 'agent' and args.question is None
+            with OpenAI(api_key=api_key, base_url='https://api.deepseek.com', timeout=60, max_retries=1) as client:
+                qa = QA(client, graph, mode=args.mode, reasoning_effort=reasoning_effort,
+                        multi_turn=multi_turn, on_query=_trace_query if args.show_cypher else None,
+                        on_reasoning=_trace_reasoning if args.show_reasoning else None)
+                if args.question is None:
+                    return _interactive(qa, multi_turn=multi_turn)
+                print(qa.ask(args.question.strip()))
+        finally:
+            graph.close()
+    except (QAError, GraphQueryError) as error:
+        print(f'问答失败：{error}', file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        return 130
+    return 0
+
 
 if __name__ == '__main__':
-    handler = ChatBotGraph()
-    while 1:
-        question = input('用户:')
-        answer = handler.chat_main(question)
-        print('小勇:', answer)
-
+    raise SystemExit(main())
