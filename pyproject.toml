@@ -1,0 +1,13 @@
+[project]
+name = "qa-system-on-medical-kg"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "py2neo==2021.2.4",
+    "pyahocorasick==2.3.1",
+]
+
+[[tool.uv.index]]
+name = "pypi"
+url = "https://pypi.org/simple"
+default = true

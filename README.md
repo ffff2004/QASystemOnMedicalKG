@@ -18,7 +18,7 @@ self-implement of disease centered Medical graph from zero to full and sever as 
 
 # 项目运行方式
 
-需要 Neo4j 和 Python 3.12。以下命令在仓库根目录执行，用 `uv` 安装问答和入库所需的 Python 依赖。数据已包含在 `data/medical.json`，无需运行采集脚本。
+需要 Neo4j 和 `uv`。以下命令在仓库根目录执行；`uv run` 会准备 Python 3.12，并按 `uv.lock` 同步 `.venv`。数据已包含在 `data/medical.json`，无需运行采集脚本。
 
 1. 启动 Neo4j。已有实例可跳过容器命令，填入实际的连接配置即可。下面是用 Podman 启动本地实例的示例：
 
@@ -37,13 +37,13 @@ self-implement of disease centered Medical graph from zero to full and sever as 
 2. Neo4j 就绪后，向空数据库导入图谱。使用上述容器时，可用 `podman logs medical-neo4j` 确认启动状态。全量导入可能需要数小时，重复执行会创建重复数据。
 
    ```bash
-   uv run --no-project --python 3.12 --with-requirements requirements.txt python build_medicalgraph.py
+   uv run python build_medicalgraph.py
    ```
 
 3. 在同一个终端启动问答，试着输入「乳腺癌的症状有哪些？」：
 
    ```bash
-   uv run --no-project --python 3.12 --with-requirements requirements.txt python chatbot_graph.py
+   uv run python chatbot_graph.py
    ```
 
 # 以下介绍详细方案
