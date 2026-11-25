@@ -48,9 +48,7 @@ def _interactive(qa, *, multi_turn):
 def main(argv=None):
     parser = argparse.ArgumentParser(description='基于 Neo4j 医疗知识图谱的 DeepSeek 问答')
     parser.add_argument('--mode', choices=('workflow', 'agent'), default='workflow')
-    interaction = parser.add_mutually_exclusive_group()
-    interaction.add_argument('--interactive', action='store_true', help='交互问答（默认）')
-    interaction.add_argument('--question', help='仅回答一个问题后退出')
+    parser.add_argument('--question', help='仅回答一个问题后退出；省略时进入交互问答')
     parser.add_argument('--show-cypher', action='store_true', help='在 stderr 展示查询与原始结果行')
     parser.add_argument('--show-reasoning', action='store_true', help='在 stderr 展示 API 返回的推理')
     args = parser.parse_args(argv)

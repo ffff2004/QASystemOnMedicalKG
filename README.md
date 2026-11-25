@@ -37,7 +37,7 @@ uv run python build_medicalgraph.py
 # 默认：交互式 workflow，逐问独立处理
 uv run python chatbot_graph.py
 # 交互式 agent：可拆解查询、追加查询和多轮追问；/reset 清空会话
-uv run python chatbot_graph.py --mode agent --interactive
+uv run python chatbot_graph.py --mode agent
 # 非交互：只回答一问，并在 stderr 展示 Cypher、参数、Neo4j 原始结果行
 uv run python chatbot_graph.py --question '乳腺癌的症状有哪些？' --show-cypher
 ```

@@ -52,7 +52,7 @@ class CLITest(unittest.TestCase):
         self.assertEqual(quiet_requests, traced_requests)
         self.assertEqual([req['reasoning_effort'] for req in traced_requests], ['low', 'low'])
 
-    def test_interactive_and_question_cannot_be_combined(self):
+    def test_removed_interactive_flag_is_rejected(self):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
-            main(['--interactive', '--question', '问题'])
+            main(['--interactive'])
         self.assertEqual(error.exception.code, 2)
