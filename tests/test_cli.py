@@ -28,7 +28,7 @@ class CLITest(unittest.TestCase):
         }
         stdout, stderr = io.StringIO(), io.StringIO()
         with (
-            patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'offline-test', 'DEEPSEEK_THINKING': 'enabled'}),
+            patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'offline-test', 'DEEPSEEK_REASONING_EFFORT': 'low'}),
             patch('chatbot_graph.CypherGraph', return_value=graph),
             patch('chatbot_graph.OpenAI', return_value=client),
             redirect_stdout(stdout), redirect_stderr(stderr),
@@ -50,6 +50,7 @@ class CLITest(unittest.TestCase):
         self.assertIn('结果已截断', diagnostics)
         self.assertIn('模拟推理', diagnostics)
         self.assertEqual(quiet_requests, traced_requests)
+        self.assertEqual([req['reasoning_effort'] for req in traced_requests], ['low', 'low'])
 
     def test_interactive_and_question_cannot_be_combined(self):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:

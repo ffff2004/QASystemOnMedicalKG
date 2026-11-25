@@ -62,12 +62,12 @@ def main(argv=None):
     if not api_key:
         print('请在 .env 或环境变量中配置 DEEPSEEK_API_KEY。', file=sys.stderr)
         return 1
-    thinking = os.getenv('DEEPSEEK_THINKING', 'disabled').strip().lower()
-    if thinking not in ('enabled', 'disabled'):
-        print('DEEPSEEK_THINKING 须为 enabled 或 disabled。', file=sys.stderr)
+    reasoning_effort = os.getenv('DEEPSEEK_REASONING_EFFORT', 'none').strip().lower()
+    if reasoning_effort not in ('none', 'low', 'high', 'max'):
+        print('DEEPSEEK_REASONING_EFFORT 须为 none、low、high 或 max。', file=sys.stderr)
         return 1
-    if args.show_reasoning and thinking == 'disabled':
-        print('Thinking 已关闭，没有推理可展示。', file=sys.stderr)
+    if args.show_reasoning and reasoning_effort == 'none':
+        print('DEEPSEEK_REASONING_EFFORT=none，没有推理可展示。', file=sys.stderr)
 
     try:
         graph = CypherGraph()
@@ -75,7 +75,7 @@ def main(argv=None):
             graph.ensure_read_only()
             multi_turn = args.mode == 'agent' and args.question is None
             with OpenAI(api_key=api_key, base_url='https://api.deepseek.com', timeout=60, max_retries=1) as client:
-                qa = QA(client, graph, mode=args.mode, thinking=thinking == 'enabled',
+                qa = QA(client, graph, mode=args.mode, reasoning_effort=reasoning_effort,
                         multi_turn=multi_turn, on_query=_trace_query if args.show_cypher else None,
                         on_reasoning=_trace_reasoning if args.show_reasoning else None)
                 if args.question is None:

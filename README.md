@@ -44,7 +44,7 @@ uv run python chatbot_graph.py --question '乳腺癌的症状有哪些？' --sho
 
 `workflow` 固定按生成查询、查图、作答的顺序执行；`agent` 可根据中间结果追加查询。只有交互式 `agent` 保留有上限的内存会话，退出不保存。结果受行数和体积限制，被截断时会标注。
 
-如需查看 DeepSeek 的推理，先配置 `DEEPSEEK_THINKING=enabled`（默认 `disabled`），再加 `--show-reasoning`。两个 `--show-*` 开关都只控制 stderr 的展示，不改变模型请求；非交互的 stdout 只输出答案。
+`DEEPSEEK_REASONING_EFFORT` 默认为 `none`（关闭推理），可设为 `low`、`high` 或 `max`。启用推理后，可加 `--show-reasoning` 查看。两个 `--show-*` 开关都只控制 stderr 的展示，不改变模型请求；非交互的 stdout 只输出答案。
 
 Demo 只输入公开知识问句。问句、schema、必要的查询结果和近期 agent 会话上下文可能发送给 DeepSeek；应用不会自动识别患者信息，请勿输入。
 

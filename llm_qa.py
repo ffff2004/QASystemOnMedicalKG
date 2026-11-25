@@ -91,14 +91,14 @@ def _plain_text(content):
 
 
 class QA:
-    def __init__(self, client, graph, *, mode="workflow", thinking=False,
+    def __init__(self, client, graph, *, mode="workflow", reasoning_effort="none",
                  multi_turn=False, on_query=None, on_reasoning=None):
         if mode not in ("workflow", "agent"):
             raise QAError("问答模式必须是 workflow 或 agent。")
         self._client = client
         self._graph = graph
         self._mode = mode
-        self._thinking = thinking
+        self._reasoning_effort = reasoning_effort
         self._multi_turn = multi_turn and mode == "agent"
         self._on_query = on_query
         self._on_reasoning = on_reasoning
@@ -128,7 +128,7 @@ class QA:
             response = self._client.chat.completions.create(
                 model=_MODEL,
                 messages=messages,
-                extra_body={"thinking": {"type": "enabled" if self._thinking else "disabled"}},
+                reasoning_effort=self._reasoning_effort,
                 max_tokens=8192,
                 **options,
             )

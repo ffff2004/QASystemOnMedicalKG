@@ -71,7 +71,8 @@ class WorkflowTests(unittest.TestCase):
         planning, answering = client.requests
         self.assertIn(question, user_text(planning))
         self.assertEqual(planning["response_format"], {"type": "json_object"})
-        self.assertEqual(planning["extra_body"]["thinking"], {"type": "disabled"})
+        self.assertEqual(planning["reasoning_effort"], "none")
+        self.assertEqual(answering["reasoning_effort"], "none")
         self.assertIn(question, user_text(answering))
         self.assertIn("图谱证据", user_text(answering))
         self.assertRegex(user_text(answering), r'"truncated"\s*:\s*true')
@@ -130,13 +131,14 @@ class AgentTests(unittest.TestCase):
         )
         graph = FakeGraph(RESULT, second_result)
         reported_reasoning = []
-        qa = QA(client, graph, mode="agent", thinking=True, on_reasoning=reported_reasoning.append)
+        qa = QA(client, graph, mode="agent", reasoning_effort="high", on_reasoning=reported_reasoning.append)
 
         self.assertEqual(qa.ask("查询两个实体"), "查询完成。")
 
         first_request, continuation = client.requests
         self.assertIn("query_graph", [tool["function"]["name"] for tool in first_request["tools"]])
-        self.assertEqual(first_request["extra_body"]["thinking"], {"type": "enabled"})
+        self.assertEqual(first_request["reasoning_effort"], "high")
+        self.assertEqual(continuation["reasoning_effort"], "high")
         self.assertEqual(graph.calls, [(CYPHER, QUERY["parameters"]), (CYPHER, second["parameters"])])
         self.assertEqual(reported_reasoning, [reasoning, final_reasoning])
         assistant, first_reply, second_reply = continuation["messages"][-3:]
@@ -185,7 +187,7 @@ class AgentTests(unittest.TestCase):
                     completion("未经查询的回答"),
                     completion("未经查询的回答"),
                 )
-                qa = QA(client, FakeGraph(RESULT), mode="agent", thinking=True, multi_turn=multi_turn)
+                qa = QA(client, FakeGraph(RESULT), mode="agent", reasoning_effort="high", multi_turn=multi_turn)
 
                 self.assertEqual(qa.ask(first_question), first_answer)
                 self.assertNotEqual(qa.ask("它是什么？"), "未经查询的回答")
