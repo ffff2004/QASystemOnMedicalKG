@@ -20,6 +20,6 @@
 ```bash
 uv sync --locked                       # 按锁文件同步依赖
 uv lock --check                        # 检查锁文件是否与项目配置一致
-uv run python build_medicalgraph.py    # 仅首次向空数据库导入；重复运行会产生重复数据
+uv run python build_medicalgraph.py    # 幂等导入；--reset 先清空数据库
 uv run python chatbot_graph.py         # 启动终端问答
 ```

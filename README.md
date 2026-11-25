@@ -34,10 +34,11 @@ self-implement of disease centered Medical graph from zero to full and sever as 
      docker.io/library/neo4j:2026.10.2-community
    ```
 
-2. Neo4j 就绪后，向空数据库导入图谱。使用上述容器时，可用 `podman logs medical-neo4j` 确认启动状态。全量导入可能需要数小时，重复执行会创建重复数据。
+2. Neo4j 就绪后导入图谱。脚本会先建唯一约束，再用批量 `MERGE` 写入，重复执行不会产生重复数据，全量约 30 秒。若数据库中已有旧版导入产生的重复数据，或需要完全重建，用 `--reset` 先清空（仅用于专用实例）。使用上述容器时，可用 `podman logs medical-neo4j` 确认启动状态。
 
    ```bash
    uv run python build_medicalgraph.py
+   # 完全重建：uv run python build_medicalgraph.py --reset
    ```
 
 3. 在同一个终端启动问答，试着输入「乳腺癌的症状有哪些？」：
