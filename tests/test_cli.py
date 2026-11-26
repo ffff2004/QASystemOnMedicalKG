@@ -11,11 +11,11 @@ from unittest.mock import MagicMock, patch
 from chatbot_graph import main
 
 
-def completion(content, *, calls=None, reasoning='模拟推理'):
+def completion(content, *, calls=None, reasoning='模拟推理', finish_reason='stop'):
     message = SimpleNamespace(content=content, reasoning_content=reasoning, tool_calls=calls)
     usage = SimpleNamespace(prompt_tokens=30, completion_tokens=10,
                             prompt_cache_hit_tokens=20, prompt_cache_miss_tokens=10)
-    return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason='stop')], usage=usage)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason=finish_reason)], usage=usage)
 
 
 def graph_call():
@@ -26,6 +26,10 @@ def graph_call():
 
 def events(path):
     return [json.loads(line) for line in path.read_text(encoding='utf-8').split('\n') if line]
+
+
+def encode_events(*items):
+    return ''.join(json.dumps(item) + '\n' for item in items).encode('utf-8')
 
 
 class CLITest(unittest.TestCase):
@@ -171,10 +175,11 @@ class CLITest(unittest.TestCase):
             self.assertIn('thinking 开关', stderr)
             self.assertFalse(requests)
 
-            first, rest = original.split(b'\n', 1)
-            for bad_record in (first + b'\n{invalid}\n' + rest,
-                               original.replace(b'"version": 1', b'"version": 99', 1),
-                               original.replace(b'"role": "assistant"', b'"role": "system"', 1)):
+            header, turn = events(source)
+            user, assistant = turn['messages']
+            for bad_record in (encode_events(header) + b'{invalid}\n' + encode_events(turn),
+                               encode_events({**header, 'version': 99}, turn),
+                               encode_events(header, {**turn, 'messages': [user, {**assistant, 'role': 'system'}]})):
                 with self.subTest(bad_record=bad_record):
                     source.write_bytes(bad_record)
                     code, _, stderr, requests, _ = self.run_agent(options)
@@ -228,9 +233,26 @@ class CLITest(unittest.TestCase):
                                  ([failed, {**completed, 'queries': [{'result': []}]}], 3),
                                  ([failed, {**completed, 'requests': [{'elapsed_ms': 'bad'}]}], 3)):
                 with self.subTest(broken=broken):
-                    path.write_text(''.join(json.dumps(event) + '\n' for event in [header, *broken]),
-                                    encoding='utf-8')
+                    path.write_bytes(encode_events(header, *broken))
                     code, _, stderr, requests, _ = self.run_agent(['--resume', str(path), '--question', '第三问'])
                     self.assertEqual(code, 1)
                     self.assertIn(f'第 {line} 行', stderr)
                     self.assertFalse(requests)
+
+    def test_failed_agent_request_records_returned_reasoning_and_nested_cache_usage(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'source.jsonl'
+            response = completion(None, reasoning='中止前的推理原文。 ', finish_reason='length')
+            response.usage = SimpleNamespace(prompt_tokens=30, completion_tokens=10,
+                                             prompt_tokens_details=SimpleNamespace(cached_tokens=20))
+            code, stdout, _, _, _ = self.run_agent(
+                ['--record', str(path), '--question', '首问'], response,
+            )
+            self.assertEqual(code, 1)
+            self.assertEqual(stdout, '')
+            _, turn = events(path)
+            self.assertEqual(turn['status'], 'failed')
+            request, = turn['requests']
+            self.assertEqual(request['reasoning_content'], '中止前的推理原文。 ')
+            self.assertEqual(request['prompt_cache_hit_tokens'], 20)
+            self.assertEqual(request['prompt_cache_miss_tokens'], 10)

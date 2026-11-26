@@ -129,6 +129,10 @@ class QA:
             self._on_record(record)
             raise
         record["answer"] = answer
+        if record["status"] == "completed":
+            # The complete agent messages already contain the reasoning verbatim.
+            for request in record["requests"]:
+                request.pop("reasoning_content", None)
         self._on_record(record)
         return answer
 
@@ -169,8 +173,15 @@ class QA:
                 usage = _field(response, "usage")
                 for key in TOKEN_FIELDS:
                     value = _field(usage, key)
-                    if type(value) is int:
+                    if type(value) is int and value >= 0:
                         metrics[key] = value
+                cached = _field(_field(usage, "prompt_tokens_details"), "cached_tokens")
+                if type(cached) is int and cached >= 0:
+                    metrics.setdefault("prompt_cache_hit_tokens", cached)
+                prompt = metrics.get("prompt_tokens")
+                hits = metrics.get("prompt_cache_hit_tokens")
+                if prompt is not None and hits is not None and hits <= prompt:
+                    metrics.setdefault("prompt_cache_miss_tokens", prompt - hits)
                 record["requests"].append(metrics)
 
         choices = _field(response, "choices")
@@ -178,6 +189,8 @@ class QA:
                 or (message := _field(choices[0], "message")) is None):
             raise QAError("模型没有返回有效响应。")
         reasoning = _field(message, "reasoning_content")
+        if record is not None and self._mode == "agent" and isinstance(reasoning, str):
+            metrics["reasoning_content"] = reasoning
         if self._on_reasoning is not None and isinstance(reasoning, str) and reasoning:
             self._on_reasoning(reasoning)
         finish_reason = _field(choices[0], "finish_reason")
