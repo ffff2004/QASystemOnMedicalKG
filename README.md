@@ -42,11 +42,22 @@ uv run python chatbot_graph.py --mode agent
 uv run python chatbot_graph.py --question '乳腺癌的症状有哪些？' --show-cypher
 ```
 
-`workflow` 固定按生成查询、查图、作答的顺序执行；`agent` 可根据中间结果追加查询。只有交互式 `agent` 保留有上限的内存会话，退出不保存。结果受行数和体积限制，被截断时会标注。
+`workflow` 固定按生成查询、查图、作答的顺序执行；`agent` 可根据中间结果追加查询。默认只有交互式 `agent` 重放近期问答和工具往返，历史超出预算时逐轮移除最旧记录；默认退出不保存。历史用于理解追问，答案仍需要本轮查询结果。结果受行数和体积限制，被截断时会标注。
 
 `DEEPSEEK_REASONING_EFFORT` 默认为 `none`（关闭推理），可设为 `low`、`high` 或 `max`。启用推理后，可加 `--show-reasoning` 查看。两个 `--show-*` 开关都只控制 stderr 的展示，不改变模型请求；非交互的 stdout 只输出答案。
 
 Demo 只输入公开知识问句。问句、schema、必要的查询结果和近期 agent 会话上下文可能发送给 DeepSeek；应用不会自动识别患者信息，请勿输入。
+
+### 记录与恢复
+
+```bash
+uv run python chatbot_graph.py --mode agent --record session.jsonl
+uv run python chatbot_graph.py --mode agent --resume session.jsonl --question '那常见并发症呢？' --record follow-up.jsonl
+```
+
+`--record` 适用于所有模式，逐轮写入新的 JSONL 文件，不覆盖已有文件。记录包含问答、查询、结果、模型请求耗时和可用的 token 用量；agent 还会保存工具往返及 API 返回的推理内容。文件可能含敏感内容，请勿直接分享，只导入自己信任的记录。
+
+`--resume` 仅适用于 agent，支持交互式和单问。有 `--record` 时，新文件包含原记录和续跑内容，源文件保持不变。恢复只重放最近一次 `/reset` 后预算内可重放的完整轮次，不重跑旧查询。缺少必需推理字段的已完成轮次仅供分析。可调整 thinking 强度，但不能改变开关状态。异常退出留下的未写完尾行会告警并跳过，其他损坏会阻止导入。
 
 ## 开发验证
 

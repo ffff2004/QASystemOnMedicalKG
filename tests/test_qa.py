@@ -178,32 +178,76 @@ class AgentTests(unittest.TestCase):
     def test_agent_history_is_opt_in_and_reset_clears_it(self):
         first_question = "首次提及的实体"
         first_answer = "第一轮回答"
-        reasoning = "仅在工具往返使用的内部推理"
+        tool_reasoning = "查图谱的推理"
+        final_reasoning = "作答的推理，保留末尾空白。 "
         for multi_turn in (False, True):
             with self.subTest(multi_turn=multi_turn):
                 client = FakeOpenAI(
-                    completion(calls=[tool_call("old_call")], reasoning=reasoning, finish_reason="tool_calls"),
-                    completion(first_answer),
-                    completion("未经查询的回答"),
+                    completion(calls=[tool_call("old_call")], reasoning=tool_reasoning, finish_reason="tool_calls"),
+                    completion(first_answer, reasoning=final_reasoning),
+                    completion("未经查询的回答", reasoning="追问的推理"),
+                    completion("仍未经查询的回答"),
                     completion("未经查询的回答"),
                 )
-                qa = QA(client, FakeGraph(RESULT), mode="agent", reasoning_effort="high", multi_turn=multi_turn)
+                graph = FakeGraph(RESULT)
+                qa = QA(client, graph, mode="agent", reasoning_effort="high", multi_turn=multi_turn)
 
                 self.assertEqual(qa.ask(first_question), first_answer)
-                self.assertNotEqual(qa.ask("它是什么？"), "未经查询的回答")
+                refusal = qa.ask("它是什么？")
+                self.assertIn("图谱证据", refusal)
+                self.assertEqual(graph.calls, [(CYPHER, QUERY["parameters"])])
 
-                follow_up = client.requests[2]
-                for prior_turn_text in (first_question, first_answer):
-                    self.assertEqual(prior_turn_text in user_text(follow_up), multi_turn)
-                self.assertNotIn(reasoning, json.dumps(follow_up["messages"], ensure_ascii=False))
-                self.assertNotIn("tool", [message["role"] for message in follow_up["messages"]])
+                follow_up = client.requests[2]["messages"]
+                if multi_turn:
+                    self.assertEqual(follow_up[:-2], client.requests[1]["messages"])
+                    self.assertEqual(follow_up[-2], {
+                        "role": "assistant", "content": first_answer, "reasoning_content": final_reasoning,
+                    })
+                else:
+                    self.assertEqual([message["role"] for message in follow_up], ["system", "user"])
+                self.assertEqual(json.loads(follow_up[-1]["content"])["question"], "它是什么？")
+
+                qa.ask("再追问一次")
+                next_follow_up = client.requests[3]["messages"]
+                if multi_turn:
+                    self.assertEqual(next_follow_up[:-2], follow_up)
+                    self.assertEqual(next_follow_up[-2], {
+                        "role": "assistant", "content": refusal, "reasoning_content": "追问的推理",
+                    })
 
                 qa.reset()
                 qa.ask("重置后提问")
 
-                after_reset = user_text(client.requests[3])
-                for prior_turn_text in (first_question, first_answer, "它是什么？"):
-                    self.assertNotIn(prior_turn_text, after_reset)
+                after_reset = client.requests[4]["messages"]
+                self.assertEqual([message["role"] for message in after_reset], ["system", "user"])
+                self.assertEqual(json.loads(after_reset[-1]["content"])["question"], "重置后提问")
+
+    def test_agent_drops_whole_old_turns_when_history_grows(self):
+        responses = []
+        for index in range(8):
+            responses.extend([
+                completion(calls=[tool_call(f"call_{index}")], finish_reason="tool_calls"),
+                completion(f"回答 {index}"),
+            ])
+        responses.append(completion("未经查询的回答"))
+        result = {"rows": [{"name": "药" * 2000}] * 5, "truncated": True}
+        client = FakeOpenAI(*responses)
+        qa = QA(client, FakeGraph(*([result] * 8)), mode="agent", multi_turn=True)
+
+        for index in range(8):
+            self.assertEqual(qa.ask(f"问题 {index}"), f"回答 {index}")
+        qa.ask("追问")
+
+        replay = client.requests[-1]["messages"][1:-1]
+        retained = len(replay) // 4
+        self.assertTrue(0 < retained < 8)
+        self.assertEqual([message["role"] for message in replay],
+                         ["user", "assistant", "tool", "assistant"] * retained)
+        self.assertEqual([json.loads(message["content"])["question"] for message in replay[::4]],
+                         [f"问题 {index}" for index in range(8 - retained, 8)])
+        for index, call, reply in zip(range(8 - retained, 8), replay[1::4], replay[2::4]):
+            self.assertEqual(call["tool_calls"][0]["id"], f"call_{index}")
+            self.assertEqual(reply["tool_call_id"], f"call_{index}")
 
 
 if __name__ == "__main__":
