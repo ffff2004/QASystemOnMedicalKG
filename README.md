@@ -42,7 +42,7 @@ uv run python chatbot_graph.py --mode agent
 uv run python chatbot_graph.py --question '乳腺癌的症状有哪些？' --show-cypher
 ```
 
-`workflow` 固定按生成查询、查图、作答的顺序执行；`agent` 可根据中间结果追加查询。只有交互式 `agent` 保留有上限的内存会话，退出不保存。结果受行数和体积限制，被截断时会标注。
+`workflow` 固定按生成查询、查图、作答的顺序执行；`agent` 可根据中间结果追加查询。只有交互式 `agent` 重放近期问答和工具往返，超出历史预算时逐轮移除最旧记录，退出不保存。历史用于理解追问，答案仍需要本轮查询结果。结果受行数和体积限制，被截断时会标注。
 
 `DEEPSEEK_REASONING_EFFORT` 默认为 `none`（关闭推理），可设为 `low`、`high` 或 `max`。启用推理后，可加 `--show-reasoning` 查看。两个 `--show-*` 开关都只控制 stderr 的展示，不改变模型请求；非交互的 stdout 只输出答案。
 
