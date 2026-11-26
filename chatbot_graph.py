@@ -2,14 +2,16 @@
 import argparse
 import json
 import os
-from pathlib import Path
 import sys
+from contextlib import nullcontext
+from pathlib import Path
 
 from dotenv import load_dotenv
 from openai import OpenAI
 
 from cypher_graph import CypherGraph, GraphQueryError
 from llm_qa import QA, QAError
+from session_record import RecordError, load_record, record_file, replay_turns
 
 
 def _trace_query(cypher, parameters, result):
@@ -51,9 +53,13 @@ def main(argv=None):
     parser.add_argument('--question', help='仅回答一个问题后退出；省略时进入交互问答')
     parser.add_argument('--show-cypher', action='store_true', help='在 stderr 展示查询与原始结果行')
     parser.add_argument('--show-reasoning', action='store_true', help='在 stderr 展示 API 返回的推理')
+    parser.add_argument('--record', metavar='PATH', help='将问答记录写入新的 JSONL 文件')
+    parser.add_argument('--resume', metavar='PATH', help='从 JSONL 文件加载 agent 会话')
     args = parser.parse_args(argv)
     if args.question is not None and not args.question.strip():
         parser.error('--question 不能为空')
+    if args.resume is not None and args.mode != 'agent':
+        parser.error('--resume 只支持 --mode agent')
 
     load_dotenv(Path(__file__).with_name('.env'), override=False)
     api_key = os.getenv('DEEPSEEK_API_KEY', '').strip()
@@ -68,20 +74,29 @@ def main(argv=None):
         print('DEEPSEEK_REASONING_EFFORT=none，没有推理可展示。', file=sys.stderr)
 
     try:
-        graph = CypherGraph()
-        try:
-            graph.ensure_read_only()
-            multi_turn = args.mode == 'agent' and args.question is None
-            with OpenAI(api_key=api_key, base_url='https://api.deepseek.com', timeout=60, max_retries=1) as client:
-                qa = QA(client, graph, mode=args.mode, reasoning_effort=reasoning_effort,
-                        multi_turn=multi_turn, on_query=_trace_query if args.show_cypher else None,
-                        on_reasoning=_trace_reasoning if args.show_reasoning else None)
-                if args.question is None:
-                    return _interactive(qa, multi_turn=multi_turn)
-                print(qa.ask(args.question.strip()))
-        finally:
-            graph.close()
-    except (QAError, GraphQueryError) as error:
+        source = [] if args.resume is None else load_record(
+            args.resume, reasoning_effort=reasoning_effort,
+            warn=lambda message: print(message, file=sys.stderr),
+        )
+        output = nullcontext() if args.record is None else record_file(
+            args.record, mode=args.mode, reasoning_effort=reasoning_effort, source=source,
+        )
+        with output as on_record:
+            graph = CypherGraph()
+            try:
+                graph.ensure_read_only()
+                multi_turn = args.mode == 'agent' and (args.question is None or args.resume is not None)
+                with OpenAI(api_key=api_key, base_url='https://api.deepseek.com', timeout=60, max_retries=1) as client:
+                    qa = QA(client, graph, mode=args.mode, reasoning_effort=reasoning_effort,
+                            multi_turn=multi_turn, history=replay_turns(source), on_record=on_record,
+                            on_query=_trace_query if args.show_cypher else None,
+                            on_reasoning=_trace_reasoning if args.show_reasoning else None)
+                    if args.question is None:
+                        return _interactive(qa, multi_turn=multi_turn)
+                    print(qa.ask(args.question.strip()))
+            finally:
+                graph.close()
+    except (QAError, GraphQueryError, RecordError) as error:
         print(f'问答失败：{error}', file=sys.stderr)
         return 1
     except KeyboardInterrupt:

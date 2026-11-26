@@ -1,16 +1,31 @@
 import io
+import json
 import os
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 from chatbot_graph import main
 
 
-def completion(content):
-    message = SimpleNamespace(content=content, reasoning_content='模拟推理', tool_calls=None)
-    return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason='stop')])
+def completion(content, *, calls=None):
+    message = SimpleNamespace(content=content, reasoning_content='模拟推理', tool_calls=calls)
+    usage = SimpleNamespace(prompt_tokens=30, completion_tokens=10,
+                            prompt_cache_hit_tokens=20, prompt_cache_miss_tokens=10)
+    return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason='stop')], usage=usage)
+
+
+def graph_call():
+    arguments = '{"cypher":"MATCH (d:Disease) RETURN d.name AS disease", "parameters":{}}'
+    return SimpleNamespace(id='call-1', type='function',
+                           function=SimpleNamespace(name='query_graph', arguments=arguments))
+
+
+def events(path):
+    return [json.loads(line) for line in path.read_text(encoding='utf-8').split('\n') if line]
 
 
 class CLITest(unittest.TestCase):
@@ -56,3 +71,113 @@ class CLITest(unittest.TestCase):
         with redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as error:
             main(['--interactive'])
         self.assertEqual(error.exception.code, 2)
+
+    def test_workflow_records_queries_and_request_usage_without_changing_stdout(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'workflow.jsonl'
+            stdout, stderr, _ = self.run_workflow(['--record', str(path)])
+            header, turn = events(path)
+
+        self.assertEqual(stderr, '')
+        self.assertEqual(stdout, '这是最终答案。\n')
+        self.assertEqual(header['mode'], 'workflow')
+        self.assertEqual(turn['answer'], stdout.strip())
+        self.assertEqual(turn['queries'][0]['result']['rows'], [{'disease': '乳腺癌'}])
+        self.assertEqual(len(turn['requests']), 2)
+        for request in turn['requests']:
+            self.assertGreaterEqual(request['elapsed_ms'], 0)
+            self.assertEqual(request['prompt_tokens'], 30)
+            self.assertEqual(request['completion_tokens'], 10)
+            self.assertEqual(request['prompt_cache_hit_tokens'], 20)
+            self.assertEqual(request['prompt_cache_miss_tokens'], 10)
+
+    def run_agent(self, flags, *responses, questions=(), effort='low'):
+        client = MagicMock()
+        client.__enter__.return_value = client
+        client.chat.completions.create.side_effect = responses
+        graph = MagicMock()
+        graph.query.return_value = {'rows': [{'disease': '乳腺癌'}], 'truncated': False}
+        stdout, stderr = io.StringIO(), io.StringIO()
+        with (
+            patch.dict(os.environ, {'DEEPSEEK_API_KEY': 'offline-test', 'DEEPSEEK_REASONING_EFFORT': effort}),
+            patch('chatbot_graph.CypherGraph', return_value=graph),
+            patch('chatbot_graph.OpenAI', return_value=client),
+            patch('builtins.input', side_effect=[*questions, EOFError]),
+            redirect_stdout(stdout), redirect_stderr(stderr),
+        ):
+            code = main(['--mode', 'agent', *flags])
+        requests = [call.kwargs for call in client.chat.completions.create.call_args_list]
+        return code, stdout.getvalue(), stderr.getvalue(), requests, graph.query.call_count
+
+    def test_agent_resume_forks_log_and_replays_only_completed_turns_since_reset(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / 'source.jsonl'
+            output = Path(directory) / 'fork.jsonl'
+            code, _, _, _, _ = self.run_agent(
+                ['--record', str(source)], completion('没有证据'), RuntimeError('offline'),
+                completion(None, calls=[graph_call()]), completion('保留的回答'),
+                questions=['已重置的问题', '/reset', '失败的问题', '保留的问题'],
+            )
+            self.assertEqual(code, 0)
+            original = source.read_bytes()
+            source_events = events(source)
+            self.assertEqual([e['event'] for e in source_events], ['header', 'turn', 'reset', 'turn', 'turn'])
+            self.assertEqual(source_events[3]['status'], 'failed')
+            self.assertEqual(source.stat().st_mode & 0o077, 0)
+
+            code, stdout, stderr, requests, n_queries = self.run_agent(
+                ['--resume', str(source), '--record', str(output), '--question', '继续追问'],
+                completion('不能使用旧证据直接回答'), effort='high',
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(stderr, '')
+            self.assertIn('未找到足够的图谱证据', stdout)
+            self.assertEqual(n_queries, 0)
+            self.assertEqual(requests[0]['messages'][1:-1], source_events[-1]['messages'])
+            self.assertEqual(source.read_bytes(), original)
+            self.assertEqual(events(output)[:-1], source_events)
+            self.assertEqual(events(output)[-1]['reasoning_effort'], 'high')
+            code, _, _, requests, _ = self.run_agent(
+                ['--resume', str(output)], completion('无新证据'), questions=['再追问'],
+            )
+            self.assertEqual(code, 0)
+            self.assertEqual(requests[0]['messages'][1:-1],
+                             source_events[-1]['messages'] + events(output)[-1]['messages'])
+
+    def test_resume_warns_for_partial_tail_and_rejects_invalid_or_mismatched_records(self):
+        with TemporaryDirectory() as directory:
+            source = Path(directory) / 'source.jsonl'
+            code, _, _, _, _ = self.run_agent(
+                ['--record', str(source), '--question', '起始问题'], completion('无证据'),
+            )
+            self.assertEqual(code, 0)
+            original = source.read_bytes()
+            source.write_bytes(original + b'{"event":')
+            options = ['--resume', str(source), '--question', '追问']
+            code, _, stderr, requests, _ = self.run_agent(options, completion('无证据'))
+            self.assertEqual(code, 0)
+            self.assertIn('末尾未写完', stderr)
+            self.assertIn('起始问题', requests[0]['messages'][1]['content'])
+
+            source.write_bytes(original)
+            code, _, stderr, requests, _ = self.run_agent(options + ['--record', str(source)])
+            self.assertEqual(code, 1)
+            self.assertIn('已存在', stderr)
+            self.assertFalse(requests)
+            self.assertEqual(source.read_bytes(), original)
+
+            code, _, stderr, requests, _ = self.run_agent(options, effort='none')
+            self.assertEqual(code, 1)
+            self.assertIn('thinking 开关', stderr)
+            self.assertFalse(requests)
+
+            first, rest = original.split(b'\n', 1)
+            for bad_record in (first + b'\n{invalid}\n' + rest,
+                               original.replace(b'"version": 1', b'"version": 99', 1),
+                               original.replace(b'"role": "assistant"', b'"role": "system"', 1)):
+                with self.subTest(bad_record=bad_record):
+                    source.write_bytes(bad_record)
+                    code, _, stderr, requests, _ = self.run_agent(options)
+                    self.assertEqual(code, 1)
+                    self.assertIn('记录文件', stderr)
+                    self.assertFalse(requests)

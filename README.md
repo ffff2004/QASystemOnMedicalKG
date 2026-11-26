@@ -48,6 +48,17 @@ uv run python chatbot_graph.py --question '乳腺癌的症状有哪些？' --sho
 
 Demo 只输入公开知识问句。问句、schema、必要的查询结果和近期 agent 会话上下文可能发送给 DeepSeek；应用不会自动识别患者信息，请勿输入。
 
+### 记录与恢复
+
+```bash
+uv run python chatbot_graph.py --mode agent --record session.jsonl
+uv run python chatbot_graph.py --mode agent --resume session.jsonl --question '那常见并发症呢？' --record follow-up.jsonl
+```
+
+`--record` 适用于所有模式，逐轮写入新的 JSONL 文件，不覆盖已有文件。记录包含问答、查询、结果、模型请求耗时和可用的 token 用量；agent 还会保存工具往返及 API 返回的推理内容。文件可能含敏感内容，请勿直接分享，只导入自己信任的记录。
+
+`--resume` 仅适用于 agent，支持交互式和单问。有 `--record` 时，新文件包含原记录和续跑内容，源文件保持不变。恢复只重放最近一次 `/reset` 后预算内的完整轮次，不重跑旧查询。可调整 thinking 强度，但不能改变开关状态。异常退出留下的未写完尾行会告警并跳过，其他损坏会阻止导入。
+
 ## 开发验证
 
 ```bash

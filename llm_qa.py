@@ -3,6 +3,7 @@
 import json
 from collections import deque
 from collections.abc import Mapping
+from time import perf_counter
 
 from cypher_graph import SCHEMA, GraphQueryError
 
@@ -94,7 +95,7 @@ def _plain_text(content):
 
 class QA:
     def __init__(self, client, graph, *, mode="workflow", reasoning_effort="none",
-                 multi_turn=False, on_query=None, on_reasoning=None):
+                 multi_turn=False, history=(), on_query=None, on_reasoning=None, on_record=None):
         if mode not in ("workflow", "agent"):
             raise QAError("问答模式必须是 workflow 或 agent。")
         self._client = client
@@ -104,19 +105,40 @@ class QA:
         self._multi_turn = multi_turn and mode == "agent"
         self._on_query = on_query
         self._on_reasoning = on_reasoning
+        self._on_record = on_record
         self._history = deque()
+        for turn in history:
+            self._remember_turn(turn)
 
     def reset(self) -> None:
         self._history.clear()
+        if self._on_record is not None:
+            self._on_record({"event": "reset"})
 
     def ask(self, question: str) -> str:
+        if self._on_record is None:
+            return self._ask(question, None)
+        record = {"event": "turn", "question": question, "status": "completed",
+                  "reasoning_effort": self._reasoning_effort, "model": _MODEL,
+                  "requests": [], "queries": []}
+        try:
+            answer = self._ask(question, record)
+        except (QAError, KeyboardInterrupt) as error:
+            record.update(status="failed", error=str(error) or "问答已中断。")
+            self._on_record(record)
+            raise
+        record["answer"] = answer
+        self._on_record(record)
+        return answer
+
+    def _ask(self, question, record):
         if not isinstance(question, str) or not question.strip():
             raise QAError("请输入非空问题。")
         if len(question) > _MAX_QUESTION_CHARS:
             raise QAError(f"问题过长，请缩短到 {_MAX_QUESTION_CHARS} 个字符以内。")
         if self._mode == "workflow":
-            return self._workflow(question)
-        return self._agent(question)
+            return self._workflow(question, record)
+        return self._agent(question, record)
 
     def _remember_turn(self, turn):
         if not self._multi_turn:
@@ -127,7 +149,9 @@ class QA:
             oldest_size, _ = self._history.popleft()
             size -= oldest_size
 
-    def _complete(self, messages, **options):
+    def _complete(self, messages, record, **options):
+        started = perf_counter() if record is not None else None
+        response = None
         try:
             response = self._client.chat.completions.create(
                 model=_MODEL,
@@ -138,6 +162,16 @@ class QA:
             )
         except Exception:
             raise QAError("模型请求失败，请检查网络和 DeepSeek API 配置，或稍后重试。") from None
+        finally:
+            if record is not None:
+                metrics = {"elapsed_ms": round((perf_counter() - started) * 1000, 3)}
+                usage = _field(response, "usage")
+                for key in ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens",
+                            "prompt_cache_miss_tokens"):
+                    value = _field(usage, key)
+                    if type(value) is int:
+                        metrics[key] = value
+                record["requests"].append(metrics)
 
         choices = _field(response, "choices")
         if (not isinstance(choices, (list, tuple)) or not choices
@@ -153,24 +187,27 @@ class QA:
             raise QAError("模型未能返回可以使用的回答。")
         return message
 
-    def _query(self, cypher, parameters, evidence):
+    def _query(self, cypher, parameters, evidence, record):
         try:
             result = self._graph.query(cypher, parameters)
         except GraphQueryError:
-            return {"error": "图谱查询未通过校验或执行失败，请尝试更简单的只读查询。"}
-        # Keep the full result for the callback; send only rows and truncation to the model.
-        if self._on_query is not None:
-            self._on_query(result.get("executed_cypher", cypher), parameters, result)
-        bounded_result = {"rows": result["rows"], "truncated": result["truncated"]}
-        if bounded_result["rows"]:
-            evidence.append(bounded_result)
+            bounded_result = {"error": "图谱查询未通过校验或执行失败，请尝试更简单的只读查询。"}
+        else:
+            cypher = result.get("executed_cypher", cypher)
+            if self._on_query is not None:
+                self._on_query(cypher, parameters, result)
+            bounded_result = {"rows": result["rows"], "truncated": result["truncated"]}
+            if bounded_result["rows"]:
+                evidence.append(bounded_result)
+        if record is not None:
+            record["queries"].append({"cypher": cypher, "parameters": parameters, "result": bounded_result})
         return bounded_result
 
-    def _workflow(self, question):
+    def _workflow(self, question, record):
         plan_message = self._complete([
             {"role": "system", "content": _PLAN_RULES},
             {"role": "user", "content": _json({"question": question})},
-        ], response_format={"type": "json_object"})
+        ], record, response_format={"type": "json_object"})
         try:
             plan = json.loads(_field(plan_message, "content"))
             if (not isinstance(plan, dict) or set(plan) != {"queries"}
@@ -183,19 +220,21 @@ class QA:
         evidence = []
         failures = 0
         for cypher, parameters in queries:
-            result = self._query(cypher, parameters, evidence)
+            result = self._query(cypher, parameters, evidence, record)
             failures += "error" in result
         if not evidence:
+            if failures and record is not None:
+                record["status"] = "failed"
             return _QUERY_FAILED if failures else _NO_EVIDENCE
         final_message = self._complete([
             {"role": "system", "content": _ANSWER_RULES},
             {"role": "user", "content": _json({
                 "question": question, "current_evidence": evidence, "failed_queries": failures,
             })},
-        ])
+        ], record)
         return _plain_text(_field(final_message, "content"))
 
-    def _tool_result(self, call, evidence):
+    def _tool_result(self, call, evidence, record):
         function = call["function"]
         if function["name"] != _TOOL_NAME:
             return {"error": "未知工具，只允许查询本地图谱。"}
@@ -203,21 +242,22 @@ class QA:
             cypher, parameters = _query_arguments(json.loads(function["arguments"]))
         except (TypeError, ValueError, RecursionError):
             return {"error": "工具参数无效，需要 cypher 字符串和 parameters 对象。"}
-        return self._query(cypher, parameters, evidence)
+        return self._query(cypher, parameters, evidence, record)
 
-    def _agent(self, question):
-        messages = [
+    def _agent(self, question, record):
+        prefix = [
             {"role": "system", "content": _AGENT_RULES},
             *(message for _, turn in self._history for message in turn),
         ]
-        turn_start = len(messages)
-        messages.append({"role": "user", "content": _json({"question": question})})
+        turn = [{"role": "user", "content": _json({"question": question})}]
+        if record is not None:
+            record["messages"] = turn
         evidence = []
         had_failure = False
         remaining = _QUERY_BUDGET
         while True:
             message = self._complete(
-                list(messages), tools=_TOOLS, tool_choice="auto" if remaining else "none",
+                prefix + turn, record, tools=_TOOLS, tool_choice="auto" if remaining else "none",
             )
             calls = _field(message, "tool_calls")
             no_evidence = _QUERY_FAILED if had_failure else _NO_EVIDENCE
@@ -227,28 +267,34 @@ class QA:
                     answer = _plain_text(assistant["content"])
                 else:
                     answer = assistant["content"] = no_evidence
-                messages.append(assistant)
-                self._remember_turn(messages[turn_start:])
+                turn.append(assistant)
+                if not evidence and had_failure:
+                    if record is not None:
+                        record["status"] = "failed"
+                else:
+                    self._remember_turn(turn)
                 return answer
             if not remaining:
+                if record is not None:
+                    record["status"] = "incomplete"
                 return _BUDGET_EXHAUSTED if evidence else no_evidence
 
             assistant = self._tool_message(message, calls)
-            messages.append(assistant)
+            turn.append(assistant)
             for call in assistant["tool_calls"]:
                 if remaining:
                     remaining -= 1
-                    result = self._tool_result(call, evidence)
+                    result = self._tool_result(call, evidence, record)
                     had_failure = had_failure or "error" in result
                 else:
                     result = {"error": "本轮已达到图谱查询上限。"}
-                messages.append({"role": "tool", "tool_call_id": call["id"], "content": _json(result)})
+                turn.append({"role": "tool", "tool_call_id": call["id"], "content": _json(result)})
 
     @staticmethod
     def _assistant_message(message):
         assistant = {"role": "assistant", "content": _field(message, "content")}
         reasoning = _field(message, "reasoning_content")
-        if reasoning is not None:
+        if isinstance(reasoning, str):
             assistant["reasoning_content"] = reasoning
         return assistant
 
