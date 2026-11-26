@@ -15,7 +15,11 @@ TOKEN_FIELDS = ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens",
 
 def is_replayable_turn(messages, question, *, thinking):
     """Check the message shape required to send a complete agent turn back to DeepSeek."""
-    if not isinstance(messages, list) or len(messages) < 2:
+    return _valid_messages(messages, question, thinking=thinking, allow_partial=False)
+
+
+def _valid_messages(messages, question, *, thinking, allow_partial):
+    if not isinstance(messages, list) or not messages:
         return False
     try:
         user = messages[0]
@@ -40,19 +44,23 @@ def is_replayable_turn(messages, question, *, thinking):
             for call in calls:
                 call_id = call["id"]
                 function = call["function"]
-                reply = next(remaining)
                 if (set(call) != {"id", "type", "function"} or call["type"] != "function"
                         or not isinstance(call_id, str) or not call_id or call_id in ids
                         or set(function) != {"name", "arguments"}
-                        or not all(isinstance(value, str) for value in function.values())
-                        or set(reply) != {"role", "tool_call_id", "content"}
-                        or reply["role"] != "tool" or reply["tool_call_id"] != call_id
-                        or not isinstance(reply["content"], str)):
+                        or not all(isinstance(value, str) for value in function.values())):
                     return False
                 ids.add(call_id)
-    except (AttributeError, KeyError, TypeError, ValueError, RecursionError, StopIteration):
+            for call in calls:
+                reply = next(remaining, end)
+                if reply is end:
+                    return allow_partial
+                if (set(reply) != {"role", "tool_call_id", "content"}
+                        or reply["role"] != "tool" or reply["tool_call_id"] != call["id"]
+                        or not isinstance(reply["content"], str)):
+                    return False
+    except (AttributeError, KeyError, TypeError, ValueError, RecursionError):
         return False
-    return False
+    return allow_partial
 
 
 def _reject_constant(value):
@@ -70,6 +78,7 @@ def _valid_request(request):
 
 def _valid_query(query):
     if (not isinstance(query, dict) or not isinstance(query.get("cypher"), str)
+            or not query["cypher"].strip()
             or not isinstance(query.get("parameters"), dict) or not isinstance(query.get("result"), dict)):
         return False
     result = query["result"]
@@ -94,10 +103,11 @@ def _valid_event(event, *, thinking):
             or any(key in event and not isinstance(event[key], str) for key in ("answer", "error"))):
         return False
     if status == "completed":
-        return "answer" in event and is_replayable_turn(event.get("messages"), question,
-                                                        thinking=thinking and replayable)
+        return bool(requests) and "answer" in event and is_replayable_turn(
+            event.get("messages"), question, thinking=thinking and replayable,
+        )
     return ("answer" in event or "error" in event) and (
-        "messages" not in event or isinstance(event["messages"], list)
+        "messages" not in event or _valid_messages(event["messages"], question, thinking=False, allow_partial=True)
     )
 
 

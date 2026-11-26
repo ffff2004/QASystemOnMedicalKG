@@ -209,14 +209,21 @@ class CLITest(unittest.TestCase):
             self.assertEqual(requests[0]['messages'][1:-1], second['messages'])
 
     def test_agent_does_not_continue_tool_round_with_missing_thinking(self):
-        code, stdout, stderr, requests, queries = self.run_agent(
-            ['--question', '首问'], completion(None, calls=[graph_call()], reasoning=None),
-        )
-        self.assertEqual(code, 1)
-        self.assertEqual(stdout, '')
-        self.assertIn('缺少推理', stderr)
-        self.assertEqual(len(requests), 1)
-        self.assertEqual(queries, 0)
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'source.jsonl'
+            code, stdout, stderr, requests, queries = self.run_agent(
+                ['--record', str(path), '--question', '首问'], completion(None, calls=[graph_call()], reasoning=None),
+            )
+            self.assertEqual(code, 1)
+            self.assertEqual(stdout, '')
+            self.assertIn('缺少推理', stderr)
+            self.assertEqual(len(requests), 1)
+            self.assertEqual(queries, 0)
+            code, _, stderr, requests, _ = self.run_agent(
+                ['--resume', str(path), '--question', '第二问'], completion('没有证据'),
+            )
+            self.assertEqual(code, 0, stderr)
+            self.assertEqual([m['role'] for m in requests[0]['messages']], ['system', 'user'])
 
     def test_resume_rejects_invalid_analysis_fields_with_line_number(self):
         with TemporaryDirectory() as directory:
@@ -228,8 +235,12 @@ class CLITest(unittest.TestCase):
             )
             header, failed, completed = events(path)
             missing_requests = {key: value for key, value in completed.items() if key != 'requests'}
-            for broken, line in (([{**failed, 'requests': 1}, completed], 2),
+            empty_cypher = {**completed['queries'][0], 'cypher': ' '}
+            for broken, line in (([{**failed, 'messages': [None]}, completed], 2),
+                                 ([{**failed, 'requests': 1}, completed], 2),
                                  ([failed, missing_requests], 3),
+                                 ([failed, {**completed, 'requests': []}], 3),
+                                 ([failed, {**completed, 'queries': [empty_cypher]}], 3),
                                  ([failed, {**completed, 'queries': [{'result': []}]}], 3),
                                  ([failed, {**completed, 'requests': [{'elapsed_ms': 'bad'}]}], 3)):
                 with self.subTest(broken=broken):
