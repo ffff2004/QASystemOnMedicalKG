@@ -11,8 +11,8 @@ from unittest.mock import MagicMock, patch
 from chatbot_graph import main
 
 
-def completion(content, *, calls=None):
-    message = SimpleNamespace(content=content, reasoning_content='模拟推理', tool_calls=calls)
+def completion(content, *, calls=None, reasoning='模拟推理'):
+    message = SimpleNamespace(content=content, reasoning_content=reasoning, tool_calls=calls)
     usage = SimpleNamespace(prompt_tokens=30, completion_tokens=10,
                             prompt_cache_hit_tokens=20, prompt_cache_miss_tokens=10)
     return SimpleNamespace(choices=[SimpleNamespace(message=message, finish_reason='stop')], usage=usage)
@@ -180,4 +180,57 @@ class CLITest(unittest.TestCase):
                     code, _, stderr, requests, _ = self.run_agent(options)
                     self.assertEqual(code, 1)
                     self.assertIn('记录文件', stderr)
+                    self.assertFalse(requests)
+
+    def test_agent_keeps_answers_with_missing_thinking_for_analysis_only(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'source.jsonl'
+            code, stdout, _, requests, _ = self.run_agent(
+                ['--record', str(path)], completion(None, calls=[graph_call()]),
+                completion('已查到证据。', reasoning=None), completion('没有证据'),
+                questions=['首问', '第二问'],
+            )
+            self.assertEqual(code, 0)
+            self.assertIn('已查到证据。', stdout)
+            self.assertEqual([m['role'] for m in requests[-1]['messages']], ['system', 'user'])
+
+            _, first, second = events(path)
+            self.assertEqual(first['answer'], '已查到证据。')
+            self.assertIs(first['replayable'], False)
+            code, _, stderr, requests, _ = self.run_agent(
+                ['--resume', str(path), '--question', '第三问'], completion('没有证据'),
+            )
+            self.assertEqual(code, 0, stderr)
+            self.assertEqual(requests[0]['messages'][1:-1], second['messages'])
+
+    def test_agent_does_not_continue_tool_round_with_missing_thinking(self):
+        code, stdout, stderr, requests, queries = self.run_agent(
+            ['--question', '首问'], completion(None, calls=[graph_call()], reasoning=None),
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(stdout, '')
+        self.assertIn('缺少推理', stderr)
+        self.assertEqual(len(requests), 1)
+        self.assertEqual(queries, 0)
+
+    def test_resume_rejects_invalid_analysis_fields_with_line_number(self):
+        with TemporaryDirectory() as directory:
+            path = Path(directory) / 'source.jsonl'
+            self.run_agent(
+                ['--record', str(path)], RuntimeError('offline'),
+                completion(None, calls=[graph_call()]), completion('有证据'),
+                questions=['首问', '第二问'],
+            )
+            header, failed, completed = events(path)
+            missing_requests = {key: value for key, value in completed.items() if key != 'requests'}
+            for broken, line in (([{**failed, 'requests': 1}, completed], 2),
+                                 ([failed, missing_requests], 3),
+                                 ([failed, {**completed, 'queries': [{'result': []}]}], 3),
+                                 ([failed, {**completed, 'requests': [{'elapsed_ms': 'bad'}]}], 3)):
+                with self.subTest(broken=broken):
+                    path.write_text(''.join(json.dumps(event) + '\n' for event in [header, *broken]),
+                                    encoding='utf-8')
+                    code, _, stderr, requests, _ = self.run_agent(['--resume', str(path), '--question', '第三问'])
+                    self.assertEqual(code, 1)
+                    self.assertIn(f'第 {line} 行', stderr)
                     self.assertFalse(requests)

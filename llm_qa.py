@@ -6,6 +6,7 @@ from collections.abc import Mapping
 from time import perf_counter
 
 from cypher_graph import SCHEMA, GraphQueryError
+from session_record import TOKEN_FIELDS, is_replayable_turn
 
 
 class QAError(Exception):
@@ -166,8 +167,7 @@ class QA:
             if record is not None:
                 metrics = {"elapsed_ms": round((perf_counter() - started) * 1000, 3)}
                 usage = _field(response, "usage")
-                for key in ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens",
-                            "prompt_cache_miss_tokens"):
+                for key in TOKEN_FIELDS:
                     value = _field(usage, key)
                     if type(value) is int:
                         metrics[key] = value
@@ -245,6 +245,7 @@ class QA:
         return self._query(cypher, parameters, evidence, record)
 
     def _agent(self, question, record):
+        thinking = self._reasoning_effort != "none"
         prefix = [
             {"role": "system", "content": _AGENT_RULES},
             *(message for _, turn in self._history for message in turn),
@@ -271,8 +272,10 @@ class QA:
                 if not evidence and had_failure:
                     if record is not None:
                         record["status"] = "failed"
-                else:
+                elif is_replayable_turn(turn, question, thinking=thinking):
                     self._remember_turn(turn)
+                elif record is not None:
+                    record["replayable"] = False
                 return answer
             if not remaining:
                 if record is not None:
@@ -281,6 +284,8 @@ class QA:
 
             assistant = self._tool_message(message, calls)
             turn.append(assistant)
+            if thinking and "reasoning_content" not in assistant:
+                raise QAError("模型的工具调用缺少推理内容，无法继续本轮问答。")
             for call in assistant["tool_calls"]:
                 if remaining:
                     remaining -= 1
@@ -303,6 +308,8 @@ class QA:
         if not isinstance(calls, (list, tuple)):
             raise QAError("模型返回了无法继续的工具调用。")
         assistant = cls._assistant_message(message)
+        if assistant["content"] is not None and not isinstance(assistant["content"], str):
+            raise QAError("模型返回了无法继续的工具调用。")
         assistant["tool_calls"] = []
         ids = set()
         for call in calls:

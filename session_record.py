@@ -10,9 +10,11 @@ class RecordError(Exception):
 
 
 _VERSION = 1
+TOKEN_FIELDS = ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens")
 
 
-def _valid_turn(messages, question, *, thinking):
+def is_replayable_turn(messages, question, *, thinking):
+    """Check the message shape required to send a complete agent turn back to DeepSeek."""
     if not isinstance(messages, list) or len(messages) < 2:
         return False
     try:
@@ -57,6 +59,48 @@ def _reject_constant(value):
     raise ValueError(f"Invalid JSON constant: {value}")
 
 
+def _valid_request(request):
+    if not isinstance(request, dict):
+        return False
+    elapsed = request.get("elapsed_ms")
+    return (type(elapsed) in (int, float) and elapsed >= 0
+            and all(type(request[key]) is int and request[key] >= 0 for key in TOKEN_FIELDS if key in request)
+            and ("reasoning_content" not in request or isinstance(request["reasoning_content"], str)))
+
+
+def _valid_query(query):
+    if (not isinstance(query, dict) or not isinstance(query.get("cypher"), str)
+            or not isinstance(query.get("parameters"), dict) or not isinstance(query.get("result"), dict)):
+        return False
+    result = query["result"]
+    if set(result) == {"error"}:
+        return isinstance(result["error"], str)
+    return (set(result) == {"rows", "truncated"} and type(result["truncated"]) is bool
+            and isinstance(result["rows"], list) and all(isinstance(row, dict) for row in result["rows"]))
+
+
+def _valid_event(event, *, thinking):
+    status = event.get("status")
+    requests = event.get("requests")
+    queries = event.get("queries")
+    question = event.get("question")
+    replayable = event.get("replayable", True)
+    if (event.get("event") != "turn" or status not in ("completed", "failed", "incomplete")
+            or not isinstance(question, str) or not isinstance(event.get("model"), str)
+            or event.get("reasoning_effort") not in (("low", "high", "max") if thinking else ("none",))
+            or not isinstance(requests, list) or not all(map(_valid_request, requests))
+            or not isinstance(queries, list) or not all(map(_valid_query, queries))
+            or type(replayable) is not bool
+            or any(key in event and not isinstance(event[key], str) for key in ("answer", "error"))):
+        return False
+    if status == "completed":
+        return "answer" in event and is_replayable_turn(event.get("messages"), question,
+                                                        thinking=thinking and replayable)
+    return ("answer" in event or "error" in event) and (
+        "messages" not in event or isinstance(event["messages"], list)
+    )
+
+
 def load_record(path, *, reasoning_effort, warn):
     """Read a resumable agent record without changing it."""
     source = []
@@ -83,15 +127,8 @@ def load_record(path, *, reasoning_effort, warn):
                         raise RecordError("只能恢复 agent 模式的记录。")
                     if type(event.get("thinking")) is not bool or event["thinking"] != thinking:
                         raise RecordError("记录的 thinking 开关与当前 DEEPSEEK_REASONING_EFFORT 不匹配。")
-                elif event != {"event": "reset"}:
-                    status = event.get("status")
-                    question = event.get("question")
-                    if (event.get("event") != "turn" or status not in ("completed", "failed", "incomplete")
-                            or not isinstance(question, str)):
-                        raise RecordError(f"记录文件第 {number} 行不是有效的 agent 轮次。")
-                    if status == "completed" and (not isinstance(event.get("answer"), str)
-                            or not _valid_turn(event.get("messages"), question, thinking=thinking)):
-                        raise RecordError(f"记录文件第 {number} 行不是有效的 agent 轮次。")
+                elif event != {"event": "reset"} and not _valid_event(event, thinking=thinking):
+                    raise RecordError(f"记录文件第 {number} 行不是有效的 agent 轮次。")
                 source.append(event)
     except OSError as error:
         raise RecordError("无法读取记录文件。") from error
@@ -104,8 +141,9 @@ def replay_turns(source):
     start = next((i + 1 for i in range(len(source) - 1, -1, -1)
                   if source[i]["event"] == "reset"), 1)
     for i in range(start, len(source)):
-        if source[i]["status"] == "completed":
-            yield source[i]["messages"]
+        event = source[i]
+        if event["status"] == "completed" and event.get("replayable", True):
+            yield event["messages"]
 
 
 def _private_open(path, flags):
