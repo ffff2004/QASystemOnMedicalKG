@@ -16,7 +16,7 @@ jobs:
       - uses: astral-sh/setup-uv@v7
         with:
           python-version: '3.12'
-      - run: uv sync --locked
+      - run: uv sync --locked --extra web
       - run: uv run --locked python -m unittest discover -s tests
         env:
           PYTHON_DOTENV_DISABLED: '1'

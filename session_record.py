@@ -11,6 +11,9 @@ class RecordError(Exception):
 
 _VERSION = 1
 TOKEN_FIELDS = ("prompt_tokens", "completion_tokens", "prompt_cache_hit_tokens", "prompt_cache_miss_tokens")
+EFFORTS = ("none", "low", "high", "max")
+_MODES = ("workflow", "agent")
+_DISPLAY_STATUSES = ("completed", "failed", "incomplete")
 
 
 def is_replayable_turn(messages, question, *, thinking):
@@ -65,6 +68,70 @@ def _valid_messages(messages, question, *, thinking, allow_partial):
 
 def _reject_constant(value):
     raise ValueError(f"Invalid JSON constant: {value}")
+
+
+def _header_event(mode, reasoning_effort):
+    return {"event": "header", "version": _VERSION, "mode": mode,
+            "thinking": reasoning_effort != "none", "effort": reasoning_effort}
+
+
+def _parse_header(line):
+    try:
+        event = json.loads(line, parse_constant=_reject_constant)
+    except (ValueError, RecursionError) as error:
+        raise RecordError("记录文件缺少有效的文件头。") from error
+    if (not isinstance(event, dict) or event.get("event") != "header"
+            or type(event.get("version")) is not int or event["version"] != _VERSION
+            or event.get("mode") not in _MODES
+            or type(event.get("thinking")) is not bool
+            or event.get("effort", "none") not in EFFORTS):
+        raise RecordError("记录文件缺少有效的文件头。")
+    return event
+
+
+def read_header(path):
+    """Return the validated header of an existing conversation record."""
+    try:
+        with open(path, "rb") as file:
+            line = file.readline()
+    except OSError as error:
+        raise RecordError("无法读取记录文件。") from error
+    try:
+        return _parse_header(line.decode("utf-8"))
+    except UnicodeDecodeError as error:
+        raise RecordError("记录文件缺少有效的文件头。") from error
+
+
+def _valid_display_turn(event):
+    if (not isinstance(event, dict) or event.get("event") != "turn"
+            or event.get("status") not in _DISPLAY_STATUSES
+            or not isinstance(event.get("question"), str)
+            or any(key in event and not isinstance(event[key], str) for key in ("answer", "error"))):
+        return False
+    return all(isinstance(event.get(key, []), list) and all(isinstance(item, dict) for item in event.get(key, []))
+               for key in ("queries", "requests"))
+
+
+def load_display(path):
+    """Read any conversation for display; unreadable turn lines are skipped."""
+    header = read_header(path)
+    turns = []
+    try:
+        with open(path, "rb") as file:
+            for number, line in enumerate(file, 1):
+                if number == 1:
+                    continue
+                if not line.endswith(b"\n"):
+                    break
+                try:
+                    event = json.loads(line.decode("utf-8"), parse_constant=_reject_constant)
+                except (ValueError, RecursionError):
+                    continue
+                if _valid_display_turn(event):
+                    turns.append(event)
+    except OSError as error:
+        raise RecordError("无法读取记录文件。") from error
+    return header, turns
 
 
 def _valid_request(request):
@@ -160,6 +227,43 @@ def _private_open(path, flags):
     return os.open(path, flags, 0o600)
 
 
+def _write_event(file, event):
+    try:
+        file.write(json.dumps(event, ensure_ascii=False, allow_nan=False, default=str) + "\n")
+        file.flush()
+    except (OSError, ValueError) as error:
+        raise RecordError("无法写入输出记录文件。") from error
+
+
+@contextmanager
+def append_file(path, *, mode, reasoning_effort):
+    """Append to an existing conversation, creating it with a pinned header when absent."""
+    if mode not in _MODES:
+        raise RecordError("记录文件的模式必须是 workflow 或 agent。")
+    if reasoning_effort not in EFFORTS:
+        raise RecordError("推理强度必须是 none、low、high 或 max。")
+    try:
+        file = open(path, "a+", encoding="utf-8", opener=_private_open)
+    except OSError as error:
+        raise RecordError("无法打开记录文件。") from error
+    try:
+        if os.fstat(file.fileno()).st_size:
+            file.seek(0)
+            header = _parse_header(file.readline())
+            if header["mode"] != mode or header["thinking"] != (reasoning_effort != "none"):
+                raise RecordError("记录文件的模式或推理开关与当前对话不一致。")
+            if "effort" in header and header["effort"] != reasoning_effort:
+                raise RecordError("记录文件的推理强度与当前对话不一致。")
+        else:
+            _write_event(file, _header_event(mode, reasoning_effort))
+        yield lambda event: _write_event(file, event)
+    finally:
+        try:
+            file.close()
+        except OSError as error:
+            raise RecordError("无法关闭记录文件。") from error
+
+
 @contextmanager
 def record_file(path, *, mode, reasoning_effort, source):
     """Exclusively create a private file, copy the source, then append new events."""
@@ -171,11 +275,7 @@ def record_file(path, *, mode, reasoning_effort, source):
         raise RecordError("无法创建输出记录文件。") from error
 
     def append(event):
-        try:
-            file.write(json.dumps(event, ensure_ascii=False, allow_nan=False, default=str) + "\n")
-            file.flush()
-        except (OSError, ValueError) as error:
-            raise RecordError("无法写入输出记录文件。") from error
+        _write_event(file, event)
 
     try:
         for event in source or [{"event": "header", "version": _VERSION, "mode": mode,

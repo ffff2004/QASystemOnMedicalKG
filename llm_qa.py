@@ -15,7 +15,7 @@ class QAError(Exception):
 
 _MODEL = "deepseek-flash"
 _QUERY_BUDGET = 4
-_MAX_QUESTION_CHARS = 4000
+MAX_QUESTION_CHARS = 4000
 _MAX_HISTORY_BYTES = 128 * 1024  # Serialized history only; leave room for the active turn.
 _TOOL_NAME = "query_graph"
 _NO_EVIDENCE = "未找到足够的图谱证据，无法回答这个问题。"
@@ -129,8 +129,9 @@ class QA:
             self._on_record(record)
             raise
         record["answer"] = answer
-        if record["status"] == "completed":
-            # The complete agent messages already contain the reasoning verbatim.
+        if record["status"] == "completed" and self._mode == "agent":
+            # The complete agent messages already contain the reasoning verbatim;
+            # workflow has no messages, so its reasoning only survives in the requests.
             for request in record["requests"]:
                 request.pop("reasoning_content", None)
         self._on_record(record)
@@ -139,8 +140,8 @@ class QA:
     def _ask(self, question, record):
         if not isinstance(question, str) or not question.strip():
             raise QAError("请输入非空问题。")
-        if len(question) > _MAX_QUESTION_CHARS:
-            raise QAError(f"问题过长，请缩短到 {_MAX_QUESTION_CHARS} 个字符以内。")
+        if len(question) > MAX_QUESTION_CHARS:
+            raise QAError(f"问题过长，请缩短到 {MAX_QUESTION_CHARS} 个字符以内。")
         if self._mode == "workflow":
             return self._workflow(question, record)
         return self._agent(question, record)
@@ -189,7 +190,7 @@ class QA:
                 or (message := _field(choices[0], "message")) is None):
             raise QAError("模型没有返回有效响应。")
         reasoning = _field(message, "reasoning_content")
-        if record is not None and self._mode == "agent" and isinstance(reasoning, str):
+        if record is not None and isinstance(reasoning, str):
             metrics["reasoning_content"] = reasoning
         if self._on_reasoning is not None and isinstance(reasoning, str) and reasoning:
             self._on_reasoning(reasoning)
