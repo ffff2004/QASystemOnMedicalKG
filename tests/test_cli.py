@@ -94,6 +94,7 @@ class CLITest(unittest.TestCase):
             self.assertEqual(request['completion_tokens'], 10)
             self.assertEqual(request['prompt_cache_hit_tokens'], 20)
             self.assertEqual(request['prompt_cache_miss_tokens'], 10)
+            self.assertEqual(request['reasoning_content'], '模拟推理')
 
     def run_agent(self, flags, *responses, questions=(), effort='low'):
         client = MagicMock()

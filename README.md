@@ -1,6 +1,6 @@
 # 医疗知识图谱问答 Demo
 
-中文终端问答。DeepSeek Flash 把问题转成 Cypher，只读查询 Neo4j，再根据图谱结果回答。数据来自原项目随仓库提供的 `data/medical.json`，仅供演示，不用于诊断、处方或商用。
+中文终端与本地 Web 问答。DeepSeek Flash 把问题转成 Cypher，只读查询 Neo4j，再根据图谱结果回答。数据来自原项目随仓库提供的 `data/medical.json`，仅供演示，不用于诊断、处方或商用。
 
 ## 项目运行方式
 
@@ -48,6 +48,17 @@ uv run python chatbot_graph.py --question '乳腺癌的症状有哪些？' --sho
 
 Demo 只输入公开知识问句。问句、schema、必要的查询结果和近期 agent 会话上下文可能发送给 DeepSeek；应用不会自动识别患者信息，请勿输入。
 
+### 本地 Web 界面
+
+```bash
+uv sync --locked --extra web
+uv run python web_app.py   # 打开 http://127.0.0.1:8000
+```
+
+服务只监听 `127.0.0.1`，启动时校验 DeepSeek 密钥并确认 Neo4j 在线且只读，任一失败即退出。界面默认亮色、可切换暗色；左侧是历史对话，右侧是提问与回答。
+
+每个对话逐轮追加到 `sessions/<id>.jsonl`（`sessions/` 已在 `.gitignore`）。新建对话时选定 `workflow` 或 `agent` 与推理强度，对话内固定；默认强度读 `DEEPSEEK_REASONING_EFFORT`。每轮回答上方按发生顺序列出可折叠的推理与查询步骤，查询步骤展开后是 Cypher、参数和 Neo4j 原始结果，截断与失败都会标注。同一时刻只运行一轮。agent 对话重启后按 `--resume` 的规则重放可重放轮次；记录损坏的 agent 对话只能浏览、不能继续。
+
 ### 记录与恢复
 
 ```bash
@@ -55,7 +66,7 @@ uv run python chatbot_graph.py --mode agent --record session.jsonl
 uv run python chatbot_graph.py --mode agent --resume session.jsonl --question '那常见并发症呢？' --record follow-up.jsonl
 ```
 
-`--record` 适用于所有模式，逐轮写入新的 JSONL 文件，不覆盖已有文件。记录包含问答、查询、结果、模型请求耗时和可用的 token 用量；agent 还会保存工具往返及 API 返回的推理内容。文件可能含敏感内容，请勿直接分享，只导入自己信任的记录。
+`--record` 适用于所有模式，逐轮写入新的 JSONL 文件，不覆盖已有文件。记录包含问答、查询、结果、模型请求耗时、可用的 token 用量和 API 返回的推理内容；agent 还会保存工具往返消息。文件可能含敏感内容，请勿直接分享，只导入自己信任的记录。
 
 `--resume` 仅适用于 agent，支持交互式和单问。有 `--record` 时，新文件包含原记录和续跑内容，源文件保持不变。恢复只重放最近一次 `/reset` 后预算内可重放的完整轮次，不重跑旧查询。缺少必需推理字段的已完成轮次仅供分析。可调整 thinking 强度，但不能改变开关状态。异常退出留下的未写完尾行会告警并跳过，其他损坏会阻止导入。
 
@@ -63,9 +74,10 @@ uv run python chatbot_graph.py --mode agent --resume session.jsonl --question '�
 
 ```bash
 uv lock --check
+uv sync --locked --extra web          # 首次运行 Web 测试前
 uv run python -m unittest discover -s tests
 ```
 
-离线测试不需要 API key。修改请求协议时参考 [DeepSeek API 核对记录](docs/deepseek-api-reference.md)。
+离线测试不需要 API key；Web 测试需要 `--extra web`，未安装时自动跳过。修改请求协议时参考 [DeepSeek API 核对记录](docs/deepseek-api-reference.md)。
 
 图谱和数据来自 [刘焕勇的原项目](https://github.com/liuhuanyong/QABasedOnMedicalKnowledgeGraph)。
